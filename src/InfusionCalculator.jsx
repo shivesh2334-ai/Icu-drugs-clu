@@ -35,6 +35,10 @@ const DRUGS = [
     diluents: ["NS", "D5W"],
     finalVolume: 50,
     drugMg: 250,
+    fluidRecipes: [
+      { fluid: "NS", drugVolumeMl: 20, fluidVolumeMl: 30, totalMl: 50, drugDescription: "1 amp (250 mg in 20 mL)" },
+      { fluid: "D5W", drugVolumeMl: 20, fluidVolumeMl: 30, totalMl: 50, drugDescription: "1 amp (250 mg in 20 mL)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 2,
     doseMax: 20,
@@ -60,6 +64,10 @@ const DRUGS = [
     diluents: ["D5W (preferred)", "NS"],
     finalVolume: 50,
     drugMg: 4,
+    fluidRecipes: [
+      { fluid: "D5W", drugVolumeMl: 4, fluidVolumeMl: 46, totalMl: 50, drugDescription: "1 amp (4 mg in 4 mL)" },
+      { fluid: "NS", drugVolumeMl: 4, fluidVolumeMl: 46, totalMl: 50, drugDescription: "1 amp (4 mg in 4 mL)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 0.01,
     doseMax: 1,
@@ -85,6 +93,10 @@ const DRUGS = [
     diluents: ["D5W", "NS"],
     finalVolume: 50,
     drugMg: 4,
+    fluidRecipes: [
+      { fluid: "D5W", drugVolumeMl: 4, fluidVolumeMl: 46, totalMl: 50, drugDescription: "4 amp (1 mg in 1 mL each)" },
+      { fluid: "NS", drugVolumeMl: 4, fluidVolumeMl: 46, totalMl: 50, drugDescription: "4 amp (1 mg in 1 mL each)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 0.01,
     doseMax: 0.5,
@@ -110,6 +122,10 @@ const DRUGS = [
     diluents: ["NS", "D5W"],
     finalVolume: 50,
     drugMg: 400,
+    fluidRecipes: [
+      { fluid: "NS", drugVolumeMl: 10, fluidVolumeMl: 40, totalMl: 50, drugDescription: "2 amp (200 mg in 5 mL each)" },
+      { fluid: "D5W", drugVolumeMl: 10, fluidVolumeMl: 40, totalMl: 50, drugDescription: "2 amp (200 mg in 5 mL each)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 2,
     doseMax: 20,
@@ -136,6 +152,10 @@ const DRUGS = [
     finalVolume: 50,
     drugMg: null,
     drugUnits: 20,
+    fluidRecipes: [
+      { fluid: "NS", drugVolumeMl: 1, fluidVolumeMl: 49, totalMl: 50, drugDescription: "1 amp (20 units in 1 mL)" },
+      { fluid: "D5W", drugVolumeMl: 1, fluidVolumeMl: 49, totalMl: 50, drugDescription: "1 amp (20 units in 1 mL)" },
+    ],
     doseUnit: "units/min",
     doseMin: 0.01,
     doseMax: 0.04,
@@ -161,6 +181,10 @@ const DRUGS = [
     diluents: ["NS", "D5W"],
     finalVolume: 50,
     drugMg: 10,
+    fluidRecipes: [
+      { fluid: "NS", drugVolumeMl: 1, fluidVolumeMl: 49, totalMl: 50, drugDescription: "1 amp (10 mg in 1 mL)" },
+      { fluid: "D5W", drugVolumeMl: 1, fluidVolumeMl: 49, totalMl: 50, drugDescription: "1 amp (10 mg in 1 mL)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 0.1,
     doseMax: 5,
@@ -186,6 +210,10 @@ const DRUGS = [
     diluents: ["NS", "D5W"],
     finalVolume: 50,
     drugMg: 20,
+    fluidRecipes: [
+      { fluid: "NS", drugVolumeMl: 20, fluidVolumeMl: 30, totalMl: 50, drugDescription: "2 amp (10 mg in 10 mL each)" },
+      { fluid: "D5W", drugVolumeMl: 20, fluidVolumeMl: 30, totalMl: 50, drugDescription: "2 amp (10 mg in 10 mL each)" },
+    ],
     doseUnit: "mcg/kg/min",
     doseMin: 0.125,
     doseMax: 0.75,
@@ -211,6 +239,22 @@ const DRUGS = [
     diluents: ["D5W only (incompatible with NS for infusion)"],
     finalVolume: 250,
     drugMg: 450,
+    fluidRecipes: [
+      {
+        fluid: "D5W",
+        drugVolumeMl: 18,
+        fluidVolumeMl: 32,
+        totalMl: 50,
+        drugDescription: "6 amp × 3 mL (150 mg each) = 900 mg in 18 mL — syringe infusion",
+      },
+      {
+        fluid: "D5W",
+        drugVolumeMl: 9,
+        fluidVolumeMl: 241,
+        totalMl: 250,
+        drugDescription: "3 amp × 3 mL (150 mg each) = 450 mg in 9 mL — 250 mL bag infusion",
+      },
+    ],
     doseUnit: "mg/hr",
     doseMin: 0.5,
     doseMax: 60,
@@ -1251,6 +1295,88 @@ function Section({ icon: Icon, title, children, tone = "#0B2740" }) {
   );
 }
 
+/* ============================== FLUID RECIPE SELECTOR ============================== */
+
+function FluidRecipeSelector({ recipes }) {
+  const [selectedIdx, setSelectedIdx] = useState(null);
+
+  // Deduplicate fluid labels for buttons (same fluid may appear multiple times)
+  const recipe = selectedIdx !== null ? recipes[selectedIdx] : null;
+
+  return (
+    <div className="rounded-xl border border-[#0E7C8622] overflow-hidden">
+      <div className="px-3 py-2 bg-[#0E7C860A] border-b border-[#0E7C8622] flex items-center gap-1.5">
+        <Droplet size={13} color="#0E7C86" />
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#0E7C86]">
+          Fluid &amp; Quantity Guide
+        </span>
+      </div>
+      <div className="p-3">
+        <p className="text-[11px] text-[#0B2740]/50 mb-2">Select a preparation recipe to see the exact volumes:</p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {recipes.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => setSelectedIdx(selectedIdx === i ? null : i)}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
+              style={
+                selectedIdx === i
+                  ? { background: "#0E7C86", color: "#fff" }
+                  : { background: "#0E7C860F", color: "#0E7C86", border: "1px solid #0E7C8622" }
+              }
+            >
+              {r.fluid} · {r.totalMl} mL
+            </button>
+          ))}
+        </div>
+
+        {recipe && (
+          <div className="rounded-lg overflow-hidden border border-[#0E7C8622]">
+            <div className="bg-[#0E7C860A] px-3 py-1.5">
+              <span className="text-[11px] font-semibold text-[#0E7C86]">{recipe.fluid} — {recipe.totalMl} mL total</span>
+            </div>
+            <div className="divide-y divide-[#0B274010]">
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <div>
+                  <p className="text-xs font-semibold text-[#0B2740]">Drug</p>
+                  <p className="text-[11px] text-[#0B2740]/50 mt-0.5">{recipe.drugDescription}</p>
+                </div>
+                <span
+                  className="text-lg font-bold text-[#0B2740] tabular-nums"
+                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                >
+                  {recipe.drugVolumeMl} mL
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <div>
+                  <p className="text-xs font-semibold text-[#0B2740]">{recipe.fluid} diluent</p>
+                  <p className="text-[11px] text-[#0B2740]/50 mt-0.5">Make up to {recipe.totalMl} mL total</p>
+                </div>
+                <span
+                  className="text-lg font-bold text-[#0B2740] tabular-nums"
+                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                >
+                  {recipe.fluidVolumeMl} mL
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5 bg-[#0B27400A]">
+                <p className="text-xs font-semibold text-[#0B2740]">Total volume</p>
+                <span
+                  className="text-lg font-bold text-[#0B2740] tabular-nums"
+                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                >
+                  {recipe.totalMl} mL
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ============================== DRUG DETAIL ============================== */
 
 function DrugDetail({ drug, onBack, isFav, toggleFav }) {
@@ -1410,7 +1536,7 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
       </Section>
 
       <Section icon={Info} title="Preparation">
-        <div className="grid grid-cols-2 gap-3 text-sm">
+        <div className="grid grid-cols-2 gap-3 text-sm mb-4">
           <InfoCell label="Ampoule" value={drug.ampoule} />
           <InfoCell label="Diluent" value={drug.diluents.join(", ")} />
           <InfoCell label="Final volume" value={`${drug.finalVolume} mL`} />
@@ -1418,6 +1544,7 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           <InfoCell label="Dose range" value={`${drug.doseMin}–${drug.doseMax} ${drug.doseUnit}`} />
           <InfoCell label="Compatible with" value={drug.compatibility.join(", ")} />
         </div>
+        {drug.fluidRecipes && <FluidRecipeSelector recipes={drug.fluidRecipes} />}
       </Section>
 
       <Section icon={Activity} title="Indications">
