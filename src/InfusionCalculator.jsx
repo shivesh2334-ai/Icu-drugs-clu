@@ -1205,14 +1205,20 @@ const CATEGORIES = [...new Set(DRUGS.map((d) => d.class))];
 
 /* ============================== CALC ENGINE ============================== */
 
-function concentration(drug) {
+function concentration(drug, recipe = null) {
   // returns { value, unit } concentration per mL of final infusion
+  // If a fluidRecipe is selected, compute concentration from its actual volumes
+  if (recipe) {
+    const totalMl = recipe.totalMl;
+    if (drug.drugUnits) return { value: drug.drugUnits / totalMl, unit: "units/mL" };
+    return { value: (drug.drugMg * 1000) / totalMl, unit: "mcg/mL" };
+  }
   if (drug.drugUnits) return { value: drug.drugUnits / drug.finalVolume, unit: "units/mL" };
   return { value: (drug.drugMg * 1000) / drug.finalVolume, unit: "mcg/mL" }; // mcg/mL
 }
 
-function computeRate(drug, weightKg, dose) {
-  const conc = concentration(drug);
+function computeRate(drug, weightKg, dose, recipe = null) {
+  const conc = concentration(drug, recipe);
   let mlPerHr, mcgPerMin, mgPerHr, unitsPerHr;
 
   if (drug.doseUnit === "mcg/kg/min") {
@@ -1297,10 +1303,7 @@ function Section({ icon: Icon, title, children, tone = "#0B2740" }) {
 
 /* ============================== FLUID RECIPE SELECTOR ============================== */
 
-function FluidRecipeSelector({ recipes }) {
-  const [selectedIdx, setSelectedIdx] = useState(null);
-
-  // Deduplicate fluid labels for buttons (same fluid may appear multiple times)
+function FluidRecipeSelector({ recipes, selectedIdx, onSelect }) {
   const recipe = selectedIdx !== null ? recipes[selectedIdx] : null;
 
   return (
@@ -1312,12 +1315,12 @@ function FluidRecipeSelector({ recipes }) {
         </span>
       </div>
       <div className="p-3">
-        <p className="text-[11px] text-[#0B2740]/50 mb-2">Select a preparation recipe to see the exact volumes:</p>
+        <p className="text-[11px] text-[#0B2740]/50 mb-2">Select a preparation recipe to load its concentration into the live calculator:</p>
         <div className="flex flex-wrap gap-2 mb-3">
           {recipes.map((r, i) => (
             <button
               key={i}
-              onClick={() => setSelectedIdx(selectedIdx === i ? null : i)}
+              onClick={() => onSelect(selectedIdx === i ? null : i)}
               className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
               style={
                 selectedIdx === i
@@ -1384,8 +1387,10 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
   const [dose, setDose] = useState(
     Math.round(((drug.doseMin + drug.doseMax) / 2) * 100) / 100
   );
+  const [recipeIdx, setRecipeIdx] = useState(null);
 
-  const result = useMemo(() => computeRate(drug, weight, dose), [drug, weight, dose]);
+  const selectedRecipe = drug.fluidRecipes && recipeIdx !== null ? drug.fluidRecipes[recipeIdx] : null;
+  const result = useMemo(() => computeRate(drug, weight, dose, selectedRecipe), [drug, weight, dose, selectedRecipe]);
   const a = ALERT[drug.alert];
 
   return (
@@ -1435,11 +1440,22 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
         className="rounded-2xl p-5 mb-5"
         style={{ background: "#0B2740", boxShadow: "0 4px 20px rgba(11,39,64,0.25)" }}
       >
-        <div className="flex items-center gap-2 mb-4">
-          <Activity size={15} color="#7FD4C9" strokeWidth={2.5} />
-          <h3 className="text-[11px] font-semibold tracking-[0.14em] uppercase text-[#7FD4C9]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-            Live Calculator
-          </h3>
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <div className="flex items-center gap-2">
+            <Activity size={15} color="#7FD4C9" strokeWidth={2.5} />
+            <h3 className="text-[11px] font-semibold tracking-[0.14em] uppercase text-[#7FD4C9]" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+              Live Calculator
+            </h3>
+          </div>
+          {drug.fluidRecipes && drug.fluidRecipes.length > 0 && (
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+              style={selectedRecipe
+                ? { background: "#7FD4C920", color: "#7FD4C9", border: "1px solid #7FD4C940" }
+                : { background: "#ffffff10", color: "#ffffff50", border: "1px solid #ffffff15" }}
+            >
+              {selectedRecipe ? `${selectedRecipe.fluid} · ${selectedRecipe.totalMl} mL` : "No recipe selected"}
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-4">
@@ -1500,7 +1516,10 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           />
         </div>
         <p className="text-[11px] text-white/35 mt-3 leading-snug">
-          Concentration: {drug.ampoule} → made up to {drug.finalVolume} mL = {fmt(result.conc.value, 1)} {result.conc.unit}
+          Concentration: {drug.ampoule} → made up to {selectedRecipe ? selectedRecipe.totalMl : drug.finalVolume} mL = {fmt(result.conc.value, 1)} {result.conc.unit}
+          {selectedRecipe && (
+            <span className="ml-1.5 text-[#7FD4C9]">({selectedRecipe.fluid} recipe selected)</span>
+          )}
         </p>
       </div>
 
@@ -1516,7 +1535,7 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
             </thead>
             <tbody>
               {drug.doseStep.map((d, i) => {
-                const r = computeRate(drug, weight, d);
+                const r = computeRate(drug, weight, d, selectedRecipe);
                 const active = Math.abs(d - dose) < 1e-6;
                 return (
                   <tr
@@ -1544,7 +1563,7 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           <InfoCell label="Dose range" value={`${drug.doseMin}–${drug.doseMax} ${drug.doseUnit}`} />
           <InfoCell label="Compatible with" value={drug.compatibility.join(", ")} />
         </div>
-        {drug.fluidRecipes && <FluidRecipeSelector recipes={drug.fluidRecipes} />}
+        {drug.fluidRecipes && <FluidRecipeSelector recipes={drug.fluidRecipes} selectedIdx={recipeIdx} onSelect={setRecipeIdx} />}
       </Section>
 
       <Section icon={Activity} title="Indications">
