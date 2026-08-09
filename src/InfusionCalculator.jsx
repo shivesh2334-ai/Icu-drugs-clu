@@ -1301,80 +1301,183 @@ function Section({ icon: Icon, title, children, tone = "#0B2740" }) {
   );
 }
 
-/* ============================== FLUID RECIPE SELECTOR ============================== */
+/* ============================== RECONSTITUTION ENGINE ==============================
+   Generalises the old fixed-preset fluidRecipes into a live, editable diluent +
+   volume chooser that works for every drug in the database and feeds straight
+   into the calculator. Falls back gracefully when the ampoule text can't be
+   parsed into a drug-volume split (e.g. "vial, reconstitute" with no stated mL).
+============================================================================ */
 
-function FluidRecipeSelector({ recipes, selectedIdx, onSelect }) {
-  const recipe = selectedIdx !== null ? recipes[selectedIdx] : null;
+function cleanDiluentLabel(d) {
+  return d.replace(/\s*\([^)]*\)/g, "").replace(/\s*—.*$/, "").trim();
+}
+
+function isPremix(drug) {
+  return drug.diluents.some((d) => /do not dilute|as supplied|ready-mixed|premixed|as it is/i.test(d));
+}
+
+// Estimates the volume (mL) contributed by the drug itself for the drug's total
+// standard dose amount (drugMg or drugUnits), by parsing the ampoule label.
+function parseDrugVolume(drug) {
+  const totalAmt = drug.drugUnits ?? drug.drugMg;
+  if (totalAmt == null) return null;
+  const amp = drug.ampoule;
+
+  let m = amp.match(/([\d,.]+)\s*(mg|mcg|g|units|mEq)\s+in\s+([\d.]+)\s*mL/i);
+  if (m) {
+    let amt = parseFloat(m[1].replace(/,/g, ""));
+    const unit = m[2].toLowerCase();
+    const vol = parseFloat(m[3]);
+    if (drug.drugUnits != null) {
+      if (unit !== "units" && unit !== "meq") return null;
+    } else {
+      if (unit === "g") amt *= 1000;
+      if (unit === "mcg") amt /= 1000;
+    }
+    if (!amt) return null;
+    const count = totalAmt / amt;
+    return { drugVolumeMl: round2(count * vol), ampouleCount: round2(count) };
+  }
+
+  m = amp.match(/reconstitute to\s*([\d.]+)\s*(mg|units)\/mL/i);
+  if (m) {
+    const concPerMl = parseFloat(m[1]);
+    if (!concPerMl) return null;
+    return { drugVolumeMl: round2(totalAmt / concPerMl), ampouleCount: null };
+  }
+
+  return null;
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// Sensible volume presets: the drug's own standard final volume plus common
+// bag/syringe sizes, deduplicated and sorted.
+function volumePresets(drug) {
+  return [...new Set([drug.finalVolume, 10, 20, 50, 100, 250, 500, 1000])]
+    .filter((v) => v >= (drug.finalVolume >= 100 ? 50 : 10) && v <= Math.max(drug.finalVolume * 4, 250))
+    .sort((a, b) => a - b);
+}
+
+function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume }) {
+  const cleanDiluents = drug.diluents.map(cleanDiluentLabel);
+  const premix = isPremix(drug);
+  const split = parseDrugVolume(drug);
+  const drugVol = split ? split.drugVolumeMl : null;
+  const diluentVol = drugVol != null ? Math.max(volume - drugVol, 0) : null;
+  const presets = volumePresets(drug);
+  const isStandard = volume === drug.finalVolume;
 
   return (
     <div className="rounded-xl border border-[#0E7C8622] overflow-hidden">
-      <div className="px-3 py-2 bg-[#0E7C860A] border-b border-[#0E7C8622] flex items-center gap-1.5">
-        <Droplet size={13} color="#0E7C86" />
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#0E7C86]">
-          Fluid &amp; Quantity Guide
+      <div className="px-3 py-2 bg-[#0E7C860A] border-b border-[#0E7C8622] flex items-center justify-between gap-1.5">
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#0E7C86]">
+          <Droplet size={13} color="#0E7C86" />
+          Reconstitution
         </span>
+        {!isStandard && !premix && (
+          <button
+            onClick={() => { setDiluent(cleanDiluents[0]); setVolume(drug.finalVolume); }}
+            className="text-[10px] font-medium text-[#0E7C86]/70 underline underline-offset-2"
+          >
+            Reset to standard
+          </button>
+        )}
       </div>
-      <div className="p-3">
-        <p className="text-[11px] text-[#0B2740]/50 mb-2">Select a preparation recipe to load its concentration into the live calculator:</p>
-        <div className="flex flex-wrap gap-2 mb-3">
-          {recipes.map((r, i) => (
-            <button
-              key={i}
-              onClick={() => onSelect(selectedIdx === i ? null : i)}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
-              style={
-                selectedIdx === i
-                  ? { background: "#0E7C86", color: "#fff" }
-                  : { background: "#0E7C860F", color: "#0E7C86", border: "1px solid #0E7C8622" }
-              }
-            >
-              {r.fluid} · {r.totalMl} mL
-            </button>
-          ))}
-        </div>
 
-        {recipe && (
-          <div className="rounded-lg overflow-hidden border border-[#0E7C8622]">
-            <div className="bg-[#0E7C860A] px-3 py-1.5">
-              <span className="text-[11px] font-semibold text-[#0E7C86]">{recipe.fluid} — {recipe.totalMl} mL total</span>
+      <div className="p-3">
+        {premix ? (
+          <div className="rounded-lg px-3 py-2.5 bg-[#0B27400A] text-xs text-[#0B2740]/70 leading-relaxed">
+            Supplied as a ready-to-use premix — do not dilute further. Final volume {drug.finalVolume} mL as supplied.
+          </div>
+        ) : (
+          <>
+            <p className="text-[11px] text-[#0B2740]/50 mb-1.5">Diluent</p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {cleanDiluents.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDiluent(d)}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
+                  style={
+                    diluent === d
+                      ? { background: "#0E7C86", color: "#fff" }
+                      : { background: "#0E7C860F", color: "#0E7C86", border: "1px solid #0E7C8622" }
+                  }
+                >
+                  {d}
+                </button>
+              ))}
             </div>
-            <div className="divide-y divide-[#0B274010]">
-              <div className="flex items-center justify-between px-3 py-2.5">
-                <div>
-                  <p className="text-xs font-semibold text-[#0B2740]">Drug</p>
-                  <p className="text-[11px] text-[#0B2740]/50 mt-0.5">{recipe.drugDescription}</p>
-                </div>
-                <span
-                  className="text-lg font-bold text-[#0B2740] tabular-nums"
-                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+
+            <p className="text-[11px] text-[#0B2740]/50 mb-1.5">Total volume for reconstitution</p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {presets.map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setVolume(v)}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
+                  style={
+                    volume === v
+                      ? { background: "#0B2740", color: "#fff" }
+                      : { background: "#0B27400A", color: "#0B2740b0", border: "1px solid #0B274014" }
+                  }
                 >
-                  {recipe.drugVolumeMl} mL
-                </span>
-              </div>
-              <div className="flex items-center justify-between px-3 py-2.5">
-                <div>
-                  <p className="text-xs font-semibold text-[#0B2740]">{recipe.fluid} diluent</p>
-                  <p className="text-[11px] text-[#0B2740]/50 mt-0.5">Make up to {recipe.totalMl} mL total</p>
-                </div>
-                <span
-                  className="text-lg font-bold text-[#0B2740] tabular-nums"
+                  {v} mL
+                </button>
+              ))}
+              <div className="flex items-center gap-1 px-2.5 py-1 rounded-full border border-[#0B274022] bg-white">
+                <input
+                  type="number"
+                  min={drugVol ?? 1}
+                  value={volume}
+                  onChange={(e) => setVolume(Math.max(Number(e.target.value) || 0, 0))}
+                  className="w-16 text-xs font-semibold outline-none text-[#0B2740] bg-transparent"
                   style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                >
-                  {recipe.fluidVolumeMl} mL
-                </span>
+                />
+                <span className="text-[10px] text-[#0B2740]/40">mL custom</span>
               </div>
-              <div className="flex items-center justify-between px-3 py-2.5 bg-[#0B27400A]">
-                <p className="text-xs font-semibold text-[#0B2740]">Total volume</p>
-                <span
-                  className="text-lg font-bold text-[#0B2740] tabular-nums"
-                  style={{ fontFamily: "'IBM Plex Mono', monospace" }}
-                >
-                  {recipe.totalMl} mL
-                </span>
+            </div>
+          </>
+        )}
+
+        <div className="rounded-lg overflow-hidden border border-[#0E7C8622]">
+          <div className="bg-[#0E7C860A] px-3 py-1.5">
+            <span className="text-[11px] font-semibold text-[#0E7C86]">
+              {diluent} — {volume} mL total{split?.ampouleCount ? ` · ${fmt(split.ampouleCount)} amp` : ""}
+            </span>
+          </div>
+          <div className="divide-y divide-[#0B274010]">
+            <div className="flex items-center justify-between px-3 py-2.5">
+              <div>
+                <p className="text-xs font-semibold text-[#0B2740]">Drug ({drug.ampoule})</p>
+                <p className="text-[11px] text-[#0B2740]/50 mt-0.5">
+                  {drugVol != null ? "Volume contributed by the drug" : "Reconstitute per vial instructions, then add"}
+                </p>
               </div>
+              <span className="text-lg font-bold text-[#0B2740] tabular-nums" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+                {drugVol != null ? `${fmt(drugVol)} mL` : "—"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3 py-2.5">
+              <div>
+                <p className="text-xs font-semibold text-[#0B2740]">{diluent} diluent</p>
+                <p className="text-[11px] text-[#0B2740]/50 mt-0.5">Make up to {volume} mL total</p>
+              </div>
+              <span className="text-lg font-bold text-[#0B2740] tabular-nums" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+                {diluentVol != null ? `${fmt(diluentVol)} mL` : "—"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-3 py-2.5 bg-[#0B27400A]">
+              <p className="text-xs font-semibold text-[#0B2740]">Total volume</p>
+              <span className="text-lg font-bold text-[#0B2740] tabular-nums" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+                {volume} mL
+              </span>
             </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -1387,9 +1490,11 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
   const [dose, setDose] = useState(
     Math.round(((drug.doseMin + drug.doseMax) / 2) * 100) / 100
   );
-  const [recipeIdx, setRecipeIdx] = useState(null);
+  const [diluent, setDiluent] = useState(cleanDiluentLabel(drug.diluents[0]));
+  const [volume, setVolume] = useState(drug.finalVolume);
 
-  const selectedRecipe = drug.fluidRecipes && recipeIdx !== null ? drug.fluidRecipes[recipeIdx] : null;
+  const selectedRecipe = useMemo(() => ({ fluid: diluent, totalMl: volume || drug.finalVolume }), [diluent, volume, drug.finalVolume]);
+  const isCustomRecipe = diluent !== cleanDiluentLabel(drug.diluents[0]) || volume !== drug.finalVolume;
   const result = useMemo(() => computeRate(drug, weight, dose, selectedRecipe), [drug, weight, dose, selectedRecipe]);
   const a = ALERT[drug.alert];
 
@@ -1447,15 +1552,13 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
               Live Calculator
             </h3>
           </div>
-          {drug.fluidRecipes && drug.fluidRecipes.length > 0 && (
-            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-              style={selectedRecipe
-                ? { background: "#7FD4C920", color: "#7FD4C9", border: "1px solid #7FD4C940" }
-                : { background: "#ffffff10", color: "#ffffff50", border: "1px solid #ffffff15" }}
-            >
-              {selectedRecipe ? `${selectedRecipe.fluid} · ${selectedRecipe.totalMl} mL` : "No recipe selected"}
-            </span>
-          )}
+          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+            style={isCustomRecipe
+              ? { background: "#7FD4C920", color: "#7FD4C9", border: "1px solid #7FD4C940" }
+              : { background: "#ffffff10", color: "#ffffff50", border: "1px solid #ffffff15" }}
+          >
+            {selectedRecipe.fluid} · {selectedRecipe.totalMl} mL{isCustomRecipe ? " (custom)" : ""}
+          </span>
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-4">
@@ -1516,10 +1619,7 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           />
         </div>
         <p className="text-[11px] text-white/35 mt-3 leading-snug">
-          Concentration: {drug.ampoule} → made up to {selectedRecipe ? selectedRecipe.totalMl : drug.finalVolume} mL = {fmt(result.conc.value, 1)} {result.conc.unit}
-          {selectedRecipe && (
-            <span className="ml-1.5 text-[#7FD4C9]">({selectedRecipe.fluid} recipe selected)</span>
-          )}
+          Concentration: {drug.ampoule} → made up to {selectedRecipe.totalMl} mL {selectedRecipe.fluid} = {fmt(result.conc.value, 1)} {result.conc.unit}
         </p>
       </div>
 
@@ -1557,13 +1657,19 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
       <Section icon={Info} title="Preparation">
         <div className="grid grid-cols-2 gap-3 text-sm mb-4">
           <InfoCell label="Ampoule" value={drug.ampoule} />
-          <InfoCell label="Diluent" value={drug.diluents.join(", ")} />
-          <InfoCell label="Final volume" value={`${drug.finalVolume} mL`} />
+          <InfoCell label="Standard diluent" value={drug.diluents.join(", ")} />
+          <InfoCell label="Standard final volume" value={`${drug.finalVolume} mL`} />
           <InfoCell label="Stability" value={drug.stability} />
           <InfoCell label="Dose range" value={`${drug.doseMin}–${drug.doseMax} ${drug.doseUnit}`} />
           <InfoCell label="Compatible with" value={drug.compatibility.join(", ")} />
         </div>
-        {drug.fluidRecipes && <FluidRecipeSelector recipes={drug.fluidRecipes} selectedIdx={recipeIdx} onSelect={setRecipeIdx} />}
+        <ReconstitutionBuilder
+          drug={drug}
+          diluent={diluent}
+          setDiluent={setDiluent}
+          volume={volume}
+          setVolume={setVolume}
+        />
       </Section>
 
       <Section icon={Activity} title="Indications">
