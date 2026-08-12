@@ -1207,14 +1207,18 @@ const CATEGORIES = [...new Set(DRUGS.map((d) => d.class))];
 
 function concentration(drug, recipe = null) {
   // returns { value, unit } concentration per mL of final infusion
-  // If a fluidRecipe is selected, compute concentration from its actual volumes
-  if (recipe) {
-    const totalMl = recipe.totalMl;
-    if (drug.drugUnits) return { value: drug.drugUnits / totalMl, unit: "units/mL" };
-    return { value: (drug.drugMg * 1000) / totalMl, unit: "mcg/mL" };
+  // If a fluidRecipe is selected, compute concentration from its actual volumes.
+  // recipe.effectiveDrugAmount overrides drug.drugMg/drugUnits when an ampoule
+  // count other than the default has been chosen.
+  const totalMl = recipe ? recipe.totalMl : drug.finalVolume;
+  const effectiveAmt = recipe?.effectiveDrugAmount ?? null;
+
+  if (drug.drugUnits != null) {
+    const amt = effectiveAmt ?? drug.drugUnits;
+    return { value: amt / totalMl, unit: "units/mL" };
   }
-  if (drug.drugUnits) return { value: drug.drugUnits / drug.finalVolume, unit: "units/mL" };
-  return { value: (drug.drugMg * 1000) / drug.finalVolume, unit: "mcg/mL" }; // mcg/mL
+  const amt = effectiveAmt ?? drug.drugMg;
+  return { value: (amt * 1000) / totalMl, unit: "mcg/mL" };
 }
 
 function computeRate(drug, weightKg, dose, recipe = null) {
@@ -1254,9 +1258,10 @@ function computeRate(drug, weightKg, dose, recipe = null) {
   const totalDrug24h = drug.drugUnits
     ? (unitsPerHr ?? dose) * 24
     : (mgPerHr ?? 0) * 24;
-  const ampoulesNeeded = drug.drugUnits
-    ? totalDrug24h / drug.drugUnits
-    : totalDrug24h / drug.drugMg;
+  // Denominator: use effective amount per syringe from recipe (ampoule-count-aware),
+  // falling back to drug.drugUnits / drug.drugMg for the standard single-syringe case.
+  const syringeDrugAmt = recipe?.effectiveDrugAmount ?? (drug.drugUnits ? drug.drugUnits : drug.drugMg);
+  const ampoulesNeeded = syringeDrugAmt ? totalDrug24h / syringeDrugAmt : null;
 
   return { mlPerHr, mcgPerMin, mgPerHr, unitsPerHr, conc, totalDrug24h, ampoulesNeeded };
 }
@@ -1316,11 +1321,10 @@ function isPremix(drug) {
   return drug.diluents.some((d) => /do not dilute|as supplied|ready-mixed|premixed|as it is/i.test(d));
 }
 
-// Estimates the volume (mL) contributed by the drug itself for the drug's total
-// standard dose amount (drugMg or drugUnits), by parsing the ampoule label.
+// Parses the ampoule label and returns per-ampoule amount and volume so the
+// reconstitution builder can scale to any chosen number of ampoules.
+// Returns { amtPerAmp, volPerAmp, defaultCount, unit } or null when unparseable.
 function parseDrugVolume(drug) {
-  const totalAmt = drug.drugUnits ?? drug.drugMg;
-  if (totalAmt == null) return null;
   const amp = drug.ampoule;
 
   let m = amp.match(/([\d,.]+)\s*(mg|mcg|g|units|mEq)\s+in\s+([\d.]+)\s*mL/i);
@@ -1335,15 +1339,18 @@ function parseDrugVolume(drug) {
       if (unit === "mcg") amt /= 1000;
     }
     if (!amt) return null;
-    const count = totalAmt / amt;
-    return { drugVolumeMl: round2(count * vol), ampouleCount: round2(count) };
+    const totalAmt = drug.drugUnits ?? drug.drugMg;
+    const defaultCount = totalAmt != null ? round2(totalAmt / amt) : 1;
+    return { amtPerAmp: amt, volPerAmp: vol, defaultCount, isUnits: drug.drugUnits != null };
   }
 
   m = amp.match(/reconstitute to\s*([\d.]+)\s*(mg|units)\/mL/i);
   if (m) {
     const concPerMl = parseFloat(m[1]);
     if (!concPerMl) return null;
-    return { drugVolumeMl: round2(totalAmt / concPerMl), ampouleCount: null };
+    const totalAmt = drug.drugUnits ?? drug.drugMg;
+    if (totalAmt == null) return null;
+    return { amtPerAmp: totalAmt, volPerAmp: round2(totalAmt / concPerMl), defaultCount: 1, isUnits: drug.drugUnits != null };
   }
 
   return null;
@@ -1361,14 +1368,32 @@ function volumePresets(drug) {
     .sort((a, b) => a - b);
 }
 
-function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume }) {
+function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume, ampouleCount, setAmpouleCount }) {
   const cleanDiluents = drug.diluents.map(cleanDiluentLabel);
   const premix = isPremix(drug);
   const split = parseDrugVolume(drug);
-  const drugVol = split ? split.drugVolumeMl : null;
-  const diluentVol = drugVol != null ? Math.max(volume - drugVol, 0) : null;
+
+  // Ampoule-based volume calculation
+  const drugVol = split ? round2(split.volPerAmp * ampouleCount) : null;
+  const effectiveDrugAmt = split ? round2(split.amtPerAmp * ampouleCount) : null;
+  const diluentVol = drugVol != null ? Math.max(round2(volume - drugVol), 0) : null;
+
   const presets = volumePresets(drug);
-  const isStandard = volume === drug.finalVolume;
+  const isStandard = volume === drug.finalVolume && ampouleCount === (split?.defaultCount ?? 1);
+
+  // Candidate ampoule counts: 1–6 filtered to those that fit in the selected volume (drug vol < total vol)
+  const ampCounts = split
+    ? [1, 2, 3, 4, 5, 6].filter((n) => round2(split.volPerAmp * n) < volume)
+    : [];
+
+  // Human-readable ampoule strength label, e.g. "2 amp (500 mg in 40 mL)"
+  function ampLabel(n) {
+    if (!split) return `${n} amp`;
+    const totalAmt = round2(split.amtPerAmp * n);
+    const totalVol = round2(split.volPerAmp * n);
+    const unitLabel = split.isUnits ? "units" : "mg";
+    return `${n} amp (${fmt(totalAmt)} ${unitLabel} in ${fmt(totalVol)} mL)`;
+  }
 
   return (
     <div className="rounded-xl border border-[#0E7C8622] overflow-hidden">
@@ -1379,7 +1404,7 @@ function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume })
         </span>
         {!isStandard && !premix && (
           <button
-            onClick={() => { setDiluent(cleanDiluents[0]); setVolume(drug.finalVolume); }}
+            onClick={() => { setDiluent(cleanDiluents[0]); setVolume(drug.finalVolume); setAmpouleCount(split?.defaultCount ?? 1); }}
             className="text-[10px] font-medium text-[#0E7C86]/70 underline underline-offset-2"
           >
             Reset to standard
@@ -1394,6 +1419,29 @@ function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume })
           </div>
         ) : (
           <>
+            {/* ── Ampoule count selector (only when parseable) ── */}
+            {ampCounts.length > 0 && (
+              <>
+                <p className="text-[11px] text-[#0B2740]/50 mb-1.5">Number of ampoules</p>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {ampCounts.map((n) => (
+                    <button
+                      key={n}
+                      onClick={() => setAmpouleCount(n)}
+                      className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
+                      style={
+                        ampouleCount === n
+                          ? { background: "#0E7C86", color: "#fff" }
+                          : { background: "#0E7C860F", color: "#0E7C86", border: "1px solid #0E7C8622" }
+                      }
+                    >
+                      {ampLabel(n)}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
             <p className="text-[11px] text-[#0B2740]/50 mb-1.5">Diluent</p>
             <div className="flex flex-wrap gap-2 mb-3">
               {cleanDiluents.map((d) => (
@@ -1446,7 +1494,7 @@ function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume })
         <div className="rounded-lg overflow-hidden border border-[#0E7C8622]">
           <div className="bg-[#0E7C860A] px-3 py-1.5">
             <span className="text-[11px] font-semibold text-[#0E7C86]">
-              {diluent} — {volume} mL total{split?.ampouleCount ? ` · ${fmt(split.ampouleCount)} amp` : ""}
+              {diluent} — {volume} mL total{split ? ` · ${fmt(ampouleCount)} amp` : ""}
             </span>
           </div>
           <div className="divide-y divide-[#0B274010]">
@@ -1454,7 +1502,9 @@ function ReconstitutionBuilder({ drug, diluent, setDiluent, volume, setVolume })
               <div>
                 <p className="text-xs font-semibold text-[#0B2740]">Drug ({drug.ampoule})</p>
                 <p className="text-[11px] text-[#0B2740]/50 mt-0.5">
-                  {drugVol != null ? "Volume contributed by the drug" : "Reconstitute per vial instructions, then add"}
+                  {drugVol != null
+                    ? `${fmt(ampouleCount)} amp · ${fmt(effectiveDrugAmt)} ${split?.isUnits ? "units" : "mg"} · volume contributed by the drug`
+                    : "Reconstitute per vial instructions, then add"}
                 </p>
               </div>
               <span className="text-lg font-bold text-[#0B2740] tabular-nums" style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
@@ -1493,8 +1543,23 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
   const [diluent, setDiluent] = useState(cleanDiluentLabel(drug.diluents[0]));
   const [volume, setVolume] = useState(drug.finalVolume);
 
-  const selectedRecipe = useMemo(() => ({ fluid: diluent, totalMl: volume || drug.finalVolume }), [diluent, volume, drug.finalVolume]);
-  const isCustomRecipe = diluent !== cleanDiluentLabel(drug.diluents[0]) || volume !== drug.finalVolume;
+  const drugSplit = useMemo(() => parseDrugVolume(drug), [drug]);
+  const [ampouleCount, setAmpouleCount] = useState(drugSplit?.defaultCount ?? 1);
+
+  const selectedRecipe = useMemo(() => {
+    const effectiveDrugAmount = drugSplit ? round2(drugSplit.amtPerAmp * ampouleCount) : null;
+    return {
+      fluid: diluent,
+      totalMl: volume || drug.finalVolume,
+      effectiveDrugAmount,
+    };
+  }, [diluent, volume, drug.finalVolume, drugSplit, ampouleCount]);
+
+  const isCustomRecipe =
+    diluent !== cleanDiluentLabel(drug.diluents[0]) ||
+    volume !== drug.finalVolume ||
+    ampouleCount !== (drugSplit?.defaultCount ?? 1);
+
   const result = useMemo(() => computeRate(drug, weight, dose, selectedRecipe), [drug, weight, dose, selectedRecipe]);
   const a = ALERT[drug.alert];
 
@@ -1619,7 +1684,9 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           />
         </div>
         <p className="text-[11px] text-white/35 mt-3 leading-snug">
-          Concentration: {drug.ampoule} → made up to {selectedRecipe.totalMl} mL {selectedRecipe.fluid} = {fmt(result.conc.value, 1)} {result.conc.unit}
+          Concentration: {drugSplit
+            ? `${fmt(ampouleCount)} amp (${fmt(selectedRecipe.effectiveDrugAmount)} ${drugSplit.isUnits ? "units" : "mg"} in ${fmt(round2(drugSplit.volPerAmp * ampouleCount))} mL)`
+            : drug.ampoule} → made up to {selectedRecipe.totalMl} mL {selectedRecipe.fluid} = {fmt(result.conc.value, 1)} {result.conc.unit}
         </p>
       </div>
 
@@ -1669,6 +1736,8 @@ function DrugDetail({ drug, onBack, isFav, toggleFav }) {
           setDiluent={setDiluent}
           volume={volume}
           setVolume={setVolume}
+          ampouleCount={ampouleCount}
+          setAmpouleCount={setAmpouleCount}
         />
       </Section>
 
